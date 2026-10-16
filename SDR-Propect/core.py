@@ -59,22 +59,29 @@ def score_business(name: str, tags: dict[str, Any], segment_key: str) -> tuple[i
         reasons.append("Correspondência ampla; revisar manualmente antes de abordar")
     return score, "; ".join(reasons)
 
+
 def build_overpass_query(area_relation_id: int, segment_key: str) -> str:
     if segment_key == "drywall":
-        name_regex = "drywall|dry wall|gesso|steel frame|construcao a seco|divisoria|forro|placa cimenticia"
-        category_regex = "construction|building_materials|trade"
+        name_regex = (
+            "drywall|dry wall|gesso|steel frame|"
+            "construcao a seco|divisoria|forro|placa cimenticia"
+        )
         craft_regex = "plasterer|drywall"
     else:
-        name_regex = "impermeabil|manta asfaltica|manta liquida|vedacao|infiltracao|impermeabilizante"
-        category_regex = "construction|building_materials|trade"
+        name_regex = (
+            "impermeabil|manta asfaltica|manta liquida|"
+            "vedacao|infiltracao|impermeabilizante"
+        )
         craft_regex = "roofer|waterproofing"
+
     area_id = 3600000000 + int(area_relation_id)
-    return f'''[out:json][timeout:35];
+
+    return f"""[out:json][timeout:25];
 area({area_id})->.searchArea;
 (
   nwr["name"~"{name_regex}",i](area.searchArea);
-  nwr["shop"~"{category_regex}",i](area.searchArea);
   nwr["craft"~"{craft_regex}",i](area.searchArea);
   nwr["office"="construction"](area.searchArea);
 );
-out center tags 100;'''
+out center tags 50;"""
+

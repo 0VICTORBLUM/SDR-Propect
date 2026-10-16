@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time
 import unicodedata
 from datetime import date, datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ load_dotenv()
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("SDR_DB_PATH", str(APP_DIR / "data" / "sdr_prospect.db")))
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "SDR-Propect/1.0 (internal B2B prospecting; contact: configure-local-admin)"
 STATES = {"São Paulo": "SP", "Rio de Janeiro": "RJ"}
@@ -150,37 +151,81 @@ def resolve_city_area(city: str, state: str) -> tuple[int, str]:
 
 
 
+
 def search_osm(city: str, state: str, segment_label: str) -> list[dict[str, Any]]:
     segment_key = SEGMENTS[segment_label]
     area_relation_id, resolved_city = resolve_city_area(city, state)
     query = build_overpass_query(area_relation_id, segment_key)
-    response = requests.post(
-        OVERPASS_URL,
-        data={"data": query},
-        headers={"User-Agent": USER_AGENT},
-        timeout=45,
-    )
-    response.raise_for_status()
-    payload = response.json()
+
+    # Faz até duas tentativas de consulta ao Overpass.
+
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                OVERPASS_URL,
+                data={"data": query},
+                headers={"User-Agent": USER_AGENT},
+                timeout=(10, 60),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            break
+
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+
+            if status not in (429, 502, 503, 504):
+                raise
+
+            if attempt == 1:
+                raise RuntimeError(
+                    f"O serviço de pesquisa retornou HTTP {status} "
+                    "após duas tentativas. Aguarde alguns minutos "
+                    "e tente novamente."
+                ) from exc
+
+            time.sleep(5)
+
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == 1:
+                raise RuntimeError(
+                    "O serviço OpenStreetMap não respondeu após "
+                    "duas tentativas. Aguarde um pouco e tente novamente."
+                ) from exc
+
+            time.sleep(3)
+
+
     results: list[dict[str, Any]] = []
+
     for element in payload.get("elements", []):
         tags = element.get("tags", {})
         name = clean_tag(tags, "name", "brand", "operator")
         if not name:
             continue
+
         score, reason = score_business(name, tags, segment_key)
         lat = element.get("lat") or element.get("center", {}).get("lat")
         lon = element.get("lon") or element.get("center", {}).get("lon")
         osm_type = element.get("type", "element")
         osm_id = element.get("id", "")
         osm_key = f"{osm_type}/{osm_id}"
-        address_parts = [clean_tag(tags, "addr:street"), clean_tag(tags, "addr:housenumber")]
+
+        address_parts = [
+            clean_tag(tags, "addr:street"),
+            clean_tag(tags, "addr:housenumber"),
+        ]
         address = ", ".join(part for part in address_parts if part)
+
         website = clean_tag(tags, "website", "contact:website")
         if website and not website.startswith(("http://", "https://")):
             website = "https://" + website
-        phone = clean_tag(tags, "contact:phone", "phone", "contact:mobile", "mobile")
+
+        phone = clean_tag(
+            tags, "contact:phone", "phone", "contact:mobile", "mobile"
+        )
         email = clean_tag(tags, "contact:email", "email")
+
         results.append({
             "osm_key": osm_key,
             "name": name,
@@ -201,12 +246,22 @@ def search_osm(city: str, state: str, segment_label: str) -> list[dict[str, Any]
             "lat": lat,
             "lon": lon,
         })
-    # Prefer the most relevant results first, then de-duplicate within the response.
+
+    # Ordena pela relevância e remove duplicados.
     unique: dict[str, dict[str, Any]] = {}
+
     for item in sorted(results, key=lambda x: x["score"], reverse=True):
-        key = normalize(item["name"]) + "|" + normalize(city) + "|" + item["state"]
+        key = (
+            normalize(item["name"])
+            + "|"
+            + normalize(city)
+            + "|"
+            + item["state"]
+        )
         unique.setdefault(key, item)
+
     return list(unique.values())
+
 
 
 def daily_added_count(day: str | None = None) -> int:
@@ -245,12 +300,31 @@ def save_leads(candidates: list[dict[str, Any]], limit: int, batch_limit: int) -
 
 def get_leads() -> pd.DataFrame:
     with connect_db() as conn:
-        df = pd.read_sql_query("""SELECT id, name AS Empresa, segment AS Segmento, score AS Pontuação,
-            score_reason AS 'Motivo da pontuação', phone AS Telefone, email AS E-mail,
-            buyer_contact AS 'Contato do comprador', website AS Site, cnpj AS CNPJ,
-            street_address AS Endereço, city AS Cidade, state AS UF, source_url AS 'Fonte',
-            message AS 'Mensagem sugerida', status AS Status, notes AS Observações,
-            created_at AS 'Adicionado em' FROM leads ORDER BY score DESC, id DESC""", conn)
+        
+        df = pd.read_sql_query("""
+                SELECT
+        id,
+        name AS "Empresa",
+        segment AS "Segmento",
+        score AS "Pontuação",
+        score_reason AS "Motivo da pontuação",
+        phone AS "Telefone",
+        email AS "E-mail",
+        buyer_contact AS "Contato do comprador",
+        website AS "Site",
+        cnpj AS "CNPJ",
+        street_address AS "Endereço",
+        city AS "Cidade",
+        state AS "UF",
+        source_url AS "Fonte",
+        message AS "Mensagem sugerida",
+        status AS "Status",
+        notes AS "Observações",
+        created_at AS "Adicionado em"
+    FROM leads
+    ORDER BY score DESC, id DESC
+""", conn)
+
     if not df.empty:
         df["Google Maps"] = df.apply(
             lambda row: "https://www.google.com/maps/search/?api=1&query=" + quote_plus(
