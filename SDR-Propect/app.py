@@ -21,7 +21,7 @@ load_dotenv()
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("SDR_DB_PATH", str(APP_DIR / "data" / "sdr_prospect.db")))
-OVERPASS_URL = "https://overpass.kumi.systems/api/interpreter"
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "SDR-Propect/1.0 (internal B2B prospecting; contact: configure-local-admin)"
 STATES = {"São Paulo": "SP", "Rio de Janeiro": "RJ"}

@@ -89,6 +89,8 @@ O banco local fica em `data/sdr_prospect.db`. Esse arquivo é ignorado pelo Git 
 
 ```bash
 python -m unittest discover -s tests
+python -m streamlit run SDR-Propect/app.py
+python -m streamlit run SDR-Propect/app.py
 ```
 
 ## Próximas evoluções recomendadas
